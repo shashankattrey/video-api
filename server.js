@@ -36,6 +36,7 @@ app.get('/api/videos', async (req, res) => {
       query.values = [limit || 1000];
     }
     const result = await pool.query(query);
+    console.log('Videos returned:', result.rows); // Add this line
     res.json(result.rows);
   } catch (err) {
     console.error(err.stack);
