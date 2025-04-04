@@ -25,16 +25,20 @@ pool.connect((err, client, release) => {
 app.use(express.json());
 
 app.get('/api/videos', async (req, res) => {
-  const {section, limit} = req.query;
-  try {
-    const query = {
-      text: 'SELECT * FROM videos WHERE section = $1 LIMIT $2',
-      values: [section, limit || 10],
+  const { section, limit = 10, offset = 0 } = req.query; // Default limit 10, offset 0
+  let query;
+  if (section) {
+    query = {
+      text: 'SELECT * FROM videos WHERE section = $1 LIMIT $2 OFFSET $3',
+      values: [section, parseInt(limit), parseInt(offset)],
     };
-    if (!section) {
-      query.text = 'SELECT * FROM videos LIMIT $1';
-      query.values = [limit || 1000];
-    }
+  } else {
+    query = {
+      text: 'SELECT * FROM videos LIMIT $1 OFFSET $2',
+      values: [parseInt(limit) || 1000, parseInt(offset)],
+    };
+  }
+  try {
     const result = await pool.query(query);
     res.json(result.rows);
   } catch (err) {
