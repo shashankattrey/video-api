@@ -30,7 +30,6 @@ pool.connect((err, client, release) => {
 // Redis client with username, password, host, and port
 const redisClient = redis.createClient({
   url: `rediss://${process.env.REDIS_USERNAME}:${process.env.REDIS_PASSWORD}@${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`,
-  // Example: rediss://myuser:mypassword@redis-13689.c52.us-east-1-4.ec2.redns.redis-cloud.com:13689
 });
 redisClient.on('error', err => console.error('Redis error:', err));
 redisClient.on('connect', () => console.log('Redis connected'));
@@ -41,10 +40,10 @@ redisClient
 app.use(express.json());
 
 app.get('/api/videos', async (req, res) => {
-  const {section, limit} = req.query;
+  const {section, limit = 10, offset = 0} = req.query; // Default limit 10, offset 0
   const cacheKey = section
-    ? `videos:${section}:${limit || 10}`
-    : `videos:all:${limit || 1000}`;
+    ? `videos:${section}:${limit}:${offset}`
+    : `videos:all:${limit}:${offset}`;
 
   try {
     // Check Redis cache
@@ -55,18 +54,22 @@ app.get('/api/videos', async (req, res) => {
     }
 
     // Cache miss: Query PostgreSQL
-    const query = {
-      text: 'SELECT * FROM videos WHERE section = $1 LIMIT $2',
-      values: [section, limit || 10],
-    };
-    if (!section) {
-      query.text = 'SELECT * FROM videos LIMIT $1';
-      query.values = [limit || 1000];
+    let query;
+    if (section) {
+      query = {
+        text: 'SELECT * FROM videos WHERE section = $1 LIMIT $2 OFFSET $3',
+        values: [section, parseInt(limit), parseInt(offset)],
+      };
+    } else {
+      query = {
+        text: 'SELECT * FROM videos LIMIT $1 OFFSET $2',
+        values: [parseInt(limit) || 1000, parseInt(offset)],
+      };
     }
     const result = await pool.query(query);
     console.log('Videos returned from DB:', result.rows.length);
 
-    // Cache in Redis
+    // Cache in Redis (1-hour expiration)
     await redisClient.setEx(cacheKey, 3600, JSON.stringify(result.rows));
     console.log(`Cached ${cacheKey} in Redis`);
     res.json(result.rows);
@@ -76,7 +79,6 @@ app.get('/api/videos', async (req, res) => {
   }
 });
 
-// Unchanged /api/users endpoint
 app.post('/api/users', async (req, res) => {
   const {
     google_id,
