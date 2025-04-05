@@ -17,7 +17,6 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
 
-// Test database connection
 pool.connect((err, client, release) => {
   if (err) {
     console.error('Database connection failed:', err.stack);
@@ -27,9 +26,13 @@ pool.connect((err, client, release) => {
   release();
 });
 
-// Redis client with username, password, host, and port
+// Redis client with explicit TLS configuration
 const redisClient = redis.createClient({
   url: `rediss://${process.env.REDIS_USERNAME}:${process.env.REDIS_PASSWORD}@${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`,
+  socket: {
+    tls: true,
+    rejectUnauthorized: false, // For testing; set to true in production with proper certs
+  },
 });
 redisClient.on('error', err => console.error('Redis error:', err));
 redisClient.on('connect', () => console.log('Redis connected'));
@@ -40,20 +43,18 @@ redisClient
 app.use(express.json());
 
 app.get('/api/videos', async (req, res) => {
-  const {section, limit = 10, offset = 0} = req.query; // Default limit 10, offset 0
+  const {section, limit = 10, offset = 0} = req.query;
   const cacheKey = section
     ? `videos:${section}:${limit}:${offset}`
     : `videos:all:${limit}:${offset}`;
 
   try {
-    // Check Redis cache
     const cachedData = await redisClient.get(cacheKey);
     if (cachedData) {
       console.log(`Cache hit for ${cacheKey}`);
       return res.json(JSON.parse(cachedData));
     }
 
-    // Cache miss: Query PostgreSQL
     let query;
     if (section) {
       query = {
@@ -69,7 +70,6 @@ app.get('/api/videos', async (req, res) => {
     const result = await pool.query(query);
     console.log('Videos returned from DB:', result.rows.length);
 
-    // Cache in Redis (1-hour expiration)
     await redisClient.setEx(cacheKey, 3600, JSON.stringify(result.rows));
     console.log(`Cached ${cacheKey} in Redis`);
     res.json(result.rows);
