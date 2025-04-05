@@ -8,10 +8,7 @@ const port = process.env.PORT || 3000;
 // Debug environment variables
 console.log('PORT:', process.env.PORT);
 console.log('DATABASE_URL:', process.env.DATABASE_URL);
-console.log('REDIS_HOST:', process.env.REDIS_HOST);
-console.log('REDIS_PORT:', process.env.REDIS_PORT);
-console.log('REDIS_USERNAME:', process.env.REDIS_USERNAME);
-console.log('REDIS_PASSWORD:', process.env.REDIS_PASSWORD);
+console.log('REDIS_URL:', process.env.REDIS_URL);
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -26,15 +23,18 @@ pool.connect((err, client, release) => {
   release();
 });
 
-// Redis client with explicit TLS configuration
+// Redis client with full URL
 const redisClient = redis.createClient({
-  url: `rediss://${process.env.REDIS_USERNAME}:${process.env.REDIS_PASSWORD}@${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`,
+  url: process.env.REDIS_URL, // e.g., rediss://default:yourpassword@redis-13689.c52.us-east-1-4.ec2.redns.redis-cloud.com:13689
   socket: {
     tls: true,
-    rejectUnauthorized: false, // For testing; set to true in production with proper certs
+    minVersion: 'TLSv1.2', // Enforce TLS 1.2+
+    rejectUnauthorized: false, // For testing; set to true with proper CA in production
   },
 });
-redisClient.on('error', err => console.error('Redis error:', err));
+redisClient.on('error', err =>
+  console.error('Redis error:', err.message, err.stack),
+);
 redisClient.on('connect', () => console.log('Redis connected'));
 redisClient
   .connect()
