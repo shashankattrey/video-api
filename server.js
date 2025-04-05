@@ -26,12 +26,6 @@ pool.connect((err, client, release) => {
 // Redis client with enhanced TLS and debugging
 const redisClient = redis.createClient({
   url: process.env.REDIS_URL,
-  socket: {
-    tls: true,
-    minVersion: 'TLSv1.2', // Enforce TLS 1.2
-    maxVersion: 'TLSv1.3', // Allow up to TLS 1.3
-    rejectUnauthorized: false, // For testing
-  },
 });
 redisClient.on('error', err =>
   console.error('Redis error:', err.message, err.stack),
