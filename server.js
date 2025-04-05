@@ -23,22 +23,27 @@ pool.connect((err, client, release) => {
   release();
 });
 
-// Redis client with full URL
+// Redis client with enhanced TLS and debugging
 const redisClient = redis.createClient({
-  url: process.env.REDIS_URL, // e.g., rediss://default:yourpassword@redis-13689.c52.us-east-1-4.ec2.redns.redis-cloud.com:13689
+  url: process.env.REDIS_URL,
   socket: {
     tls: true,
-    minVersion: 'TLSv1.2', // Enforce TLS 1.2+
-    rejectUnauthorized: false, // For testing; set to true with proper CA in production
+    minVersion: 'TLSv1.2', // Enforce TLS 1.2
+    maxVersion: 'TLSv1.3', // Allow up to TLS 1.3
+    rejectUnauthorized: false, // For testing
   },
 });
 redisClient.on('error', err =>
   console.error('Redis error:', err.message, err.stack),
 );
 redisClient.on('connect', () => console.log('Redis connected'));
+redisClient.on('ready', () => console.log('Redis ready'));
+redisClient.on('end', () => console.log('Redis connection ended'));
 redisClient
   .connect()
-  .catch(err => console.error('Redis connection failed:', err));
+  .catch(err =>
+    console.error('Redis connection failed:', err.message, err.stack),
+  );
 
 app.use(express.json());
 
