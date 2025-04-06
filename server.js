@@ -6,12 +6,19 @@ const bcrypt = require('bcrypt');
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Log environment variables for debugging
 console.log('PORT:', process.env.PORT);
 console.log('DATABASE_URL:', process.env.DATABASE_URL);
 console.log('REDIS_URL:', process.env.REDIS_URL);
 
+// Database connection
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false, // Add SSL for production
+});
+
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle database client:', err.stack);
 });
 
 pool.connect((err, client, release) => {
@@ -23,14 +30,15 @@ pool.connect((err, client, release) => {
   release();
 });
 
+// Redis connection
 const redisClient = redis.createClient({
   url: process.env.REDIS_URL,
 });
-redisClient.on('error', err => console.error('Redis error:', err.message, err.stack));
+redisClient.on('error', (err) => console.error('Redis error:', err.message, err.stack));
 redisClient.on('connect', () => console.log('Redis connected'));
 redisClient.on('ready', () => console.log('Redis ready'));
 redisClient.on('end', () => console.log('Redis connection ended'));
-redisClient.connect().catch(err => console.error('Redis connection failed:', err.message, err.stack));
+redisClient.connect().catch((err) => console.error('Redis connection failed:', err.message, err.stack));
 
 app.use(express.json());
 
@@ -62,65 +70,37 @@ app.get('/api/videos', async (req, res) => {
   }
 });
 
-// Google Sign-In endpoint
-app.post('/api/users', async (req, res) => {
-  const { google_id, email, given_name, family_name, full_name, photo_url, id_token } = req.body;
-  if (!google_id || !email || !given_name || !family_name || !full_name || !id_token) {
-    return res.status(400).json({
-      error: 'Missing required fields for Google Sign-In',
-      details: { google_id: !!google_id, email: !!email, given_name: !!given_name, family_name: !!family_name, full_name: !!full_name, id_token: !!id_token },
-    });
-  }
-  try {
-    const query = `
-      INSERT INTO users (google_id, email, given_name, family_name, full_name, photo_url, id_token)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      ON CONFLICT (google_id)
-      DO UPDATE SET
-        email = EXCLUDED.email,
-        given_name = EXCLUDED.given_name,
-        family_name = EXCLUDED.family_name,
-        full_name = EXCLUDED.full_name,
-        photo_url = EXCLUDED.photo_url,
-        id_token = EXCLUDED.id_token,
-        updated_at = CURRENT_TIMESTAMP
-      RETURNING *;
-    `;
-    const values = [google_id, email, given_name, family_name, full_name, photo_url || null, id_token];
-    const result = await pool.query(query, values);
-    res.status(201).json(result.rows[0]);
-  } catch (error) {
-    console.error('Error storing Google user:', error);
-    res.status(500).json({ error: 'Failed to store user', details: error.message });
-  }
-});
-
 // Sign-up with Email/Password
 app.post('/api/signup', async (req, res) => {
   const { email, password, full_name } = req.body;
   if (!email || !password || !full_name) {
+    console.log('Signup failed: Missing fields', { email, password, full_name });
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
+    console.log('Generated hash for signup:', hashedPassword);
+
     const query = `
       INSERT INTO users (email, password, full_name)
       VALUES ($1, $2, $3)
       ON CONFLICT (email)
       DO NOTHING
-      RETURNING *;
+      RETURNING id, email, full_name;
     `;
     const values = [email, hashedPassword, full_name];
     const result = await pool.query(query, values);
 
     if (!result.rows.length) {
+      console.log('Signup failed: Email already exists', { email });
       return res.status(409).json({ error: 'Email already exists' });
     }
 
+    console.log('Signup successful:', result.rows[0]);
     res.status(201).json(result.rows[0]);
   } catch (error) {
-    console.error('Error during signup:', error);
+    console.error('Error during signup:', error.stack);
     res.status(500).json({ error: 'Failed to sign up', details: error.message });
   }
 });
@@ -128,27 +108,38 @@ app.post('/api/signup', async (req, res) => {
 // Sign-in with Email/Password
 app.post('/api/signin', async (req, res) => {
   const { email, password } = req.body;
+  console.log('Sign-in attempt:', { email, password }); // Log input
+
   if (!email || !password) {
+    console.log('Sign-in failed: Missing email or password');
     return res.status(400).json({ error: 'Missing email or password' });
   }
 
   try {
-    const query = 'SELECT * FROM users WHERE email = $1';
+    const query = 'SELECT id, email, password, full_name FROM users WHERE email = $1';
     const result = await pool.query(query, [email]);
+    console.log('DB result:', result.rows); // Log what DB returns
 
     if (!result.rows.length) {
+      console.log('Sign-in failed: No user found for', email);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
     const user = result.rows[0];
+    console.log('Stored password hash:', user.password); // Log stored hash
+
     const isMatch = await bcrypt.compare(password, user.password || '');
+    console.log('Password match:', isMatch); // Log match result
+
     if (!isMatch) {
+      console.log('Sign-in failed: Password mismatch for', email);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
+    console.log('Sign-in successful:', { id: user.id, email: user.email, full_name: user.full_name });
     res.json({ id: user.id, email: user.email, full_name: user.full_name });
   } catch (error) {
-    console.error('Error during signin:', error);
+    console.error('Error during signin:', error.stack);
     res.status(500).json({ error: 'Failed to sign in', details: error.message });
   }
 });
