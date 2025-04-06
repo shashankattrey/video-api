@@ -3,10 +3,19 @@ const express = require('express');
 const { Pool } = require('pg');
 const redis = require('redis');
 const bcrypt = require('bcrypt');
+const cors = require('cors');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Log environment variables for debugging
+// Validate environment variables
+const requiredEnvVars = ['DATABASE_URL'];
+requiredEnvVars.forEach((varName) => {
+  if (!process.env[varName]) {
+    console.error(`Error: Missing required environment variable ${varName}`);
+    process.exit(1);
+  }
+});
+
 console.log('PORT:', process.env.PORT);
 console.log('DATABASE_URL:', process.env.DATABASE_URL);
 console.log('REDIS_URL:', process.env.REDIS_URL);
@@ -14,7 +23,7 @@ console.log('REDIS_URL:', process.env.REDIS_URL);
 // Database connection
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false, // Add SSL for production
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });
 
 pool.on('error', (err) => {
@@ -32,20 +41,39 @@ pool.connect((err, client, release) => {
 
 // Redis connection
 const redisClient = redis.createClient({
-  url: process.env.REDIS_URL,
+  url: process.env.REDIS_URL || 'redis://localhost:6379',
 });
-redisClient.on('error', (err) => console.error('Redis error:', err.message, err.stack));
+redisClient.on('error', (err) => console.error('Redis error:', err.message));
 redisClient.on('connect', () => console.log('Redis connected'));
 redisClient.on('ready', () => console.log('Redis ready'));
 redisClient.on('end', () => console.log('Redis connection ended'));
-redisClient.connect().catch((err) => console.error('Redis connection failed:', err.message, err.stack));
+
+(async () => {
+  try {
+    await redisClient.connect();
+  } catch (err) {
+    console.error('Redis connection failed:', err.message);
+  }
+})();
 
 app.use(express.json());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type'],
+}));
 
-// Videos endpoint (unchanged)
+// Health check
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
+});
+
+// Videos endpoint
 app.get('/api/videos', async (req, res) => {
   const { section, limit = 10, offset = 0 } = req.query;
-  const cacheKey = section ? `videos:${section}:${limit}:${offset}` : `videos:all:${limit}:${offset}`;
+  const parsedLimit = Math.max(1, Math.min(100, parseInt(limit)));
+  const parsedOffset = Math.max(0, parseInt(offset));
+  const cacheKey = section ? `videos:${section}:${parsedLimit}:${parsedOffset}` : `videos:all:${parsedLimit}:${parsedOffset}`;
 
   try {
     const cachedData = await redisClient.get(cacheKey);
@@ -55,8 +83,8 @@ app.get('/api/videos', async (req, res) => {
     }
 
     let query = section
-      ? { text: 'SELECT * FROM videos WHERE section = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3', values: [section, parseInt(limit), parseInt(offset)] }
-      : { text: 'SELECT * FROM videos ORDER BY created_at DESC LIMIT $1 OFFSET $2', values: [parseInt(limit) || 1000, parseInt(offset)] };
+      ? { text: 'SELECT * FROM videos WHERE section = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3', values: [section, parsedLimit, parsedOffset] }
+      : { text: 'SELECT * FROM videos ORDER BY created_at DESC LIMIT $1 OFFSET $2', values: [parsedLimit, parsedOffset] };
     
     const result = await pool.query(query);
     console.log('Videos returned from DB:', result.rows.length);
@@ -108,7 +136,7 @@ app.post('/api/signup', async (req, res) => {
 // Sign-in with Email/Password
 app.post('/api/signin', async (req, res) => {
   const { email, password } = req.body;
-  console.log('Sign-in attempt:', { email, password }); // Log input
+  console.log('Sign-in attempt:', { email, password });
 
   if (!email || !password) {
     console.log('Sign-in failed: Missing email or password');
@@ -118,7 +146,7 @@ app.post('/api/signin', async (req, res) => {
   try {
     const query = 'SELECT id, email, password, full_name FROM users WHERE email = $1';
     const result = await pool.query(query, [email]);
-    console.log('DB result:', result.rows); // Log what DB returns
+    console.log('DB result:', result.rows);
 
     if (!result.rows.length) {
       console.log('Sign-in failed: No user found for', email);
@@ -126,10 +154,10 @@ app.post('/api/signin', async (req, res) => {
     }
 
     const user = result.rows[0];
-    console.log('Stored password hash:', user.password); // Log stored hash
+    console.log('Stored password hash:', user.password);
 
     const isMatch = await bcrypt.compare(password, user.password || '');
-    console.log('Password match:', isMatch); // Log match result
+    console.log('Password match:', isMatch);
 
     if (!isMatch) {
       console.log('Sign-in failed: Password mismatch for', email);
