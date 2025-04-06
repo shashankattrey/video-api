@@ -34,12 +34,10 @@ redisClient.connect().catch(err => console.error('Redis connection failed:', err
 
 app.use(express.json());
 
-// Updated: Videos endpoint to show recently added first
+// Videos endpoint (unchanged)
 app.get('/api/videos', async (req, res) => {
   const { section, limit = 10, offset = 0 } = req.query;
-  const cacheKey = section
-    ? `videos:${section}:${limit}:${offset}`
-    : `videos:all:${limit}:${offset}`;
+  const cacheKey = section ? `videos:${section}:${limit}:${offset}` : `videos:all:${limit}:${offset}`;
 
   try {
     const cachedData = await redisClient.get(cacheKey);
@@ -48,18 +46,10 @@ app.get('/api/videos', async (req, res) => {
       return res.json(JSON.parse(cachedData));
     }
 
-    let query;
-    if (section) {
-      query = {
-        text: 'SELECT * FROM videos WHERE section = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
-        values: [section, parseInt(limit), parseInt(offset)],
-      };
-    } else {
-      query = {
-        text: 'SELECT * FROM videos ORDER BY created_at DESC LIMIT $1 OFFSET $2',
-        values: [parseInt(limit) || 1000, parseInt(offset)],
-      };
-    }
+    let query = section
+      ? { text: 'SELECT * FROM videos WHERE section = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3', values: [section, parseInt(limit), parseInt(offset)] }
+      : { text: 'SELECT * FROM videos ORDER BY created_at DESC LIMIT $1 OFFSET $2', values: [parseInt(limit) || 1000, parseInt(offset)] };
+    
     const result = await pool.query(query);
     console.log('Videos returned from DB:', result.rows.length);
 
@@ -72,12 +62,12 @@ app.get('/api/videos', async (req, res) => {
   }
 });
 
-// Google Sign-In endpoint (unchanged)
+// Google Sign-In endpoint
 app.post('/api/users', async (req, res) => {
   const { google_id, email, given_name, family_name, full_name, photo_url, id_token } = req.body;
   if (!google_id || !email || !given_name || !family_name || !full_name || !id_token) {
     return res.status(400).json({
-      error: 'Missing required fields',
+      error: 'Missing required fields for Google Sign-In',
       details: { google_id: !!google_id, email: !!email, given_name: !!given_name, family_name: !!family_name, full_name: !!full_name, id_token: !!id_token },
     });
   }
@@ -100,7 +90,7 @@ app.post('/api/users', async (req, res) => {
     const result = await pool.query(query, values);
     res.status(201).json(result.rows[0]);
   } catch (error) {
-    console.error('Error storing user:', error);
+    console.error('Error storing Google user:', error);
     res.status(500).json({ error: 'Failed to store user', details: error.message });
   }
 });
