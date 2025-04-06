@@ -3,7 +3,6 @@ const express = require('express');
 const { Pool } = require('pg');
 const redis = require('redis');
 const bcrypt = require('bcrypt');
-const cors = require('cors');
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -57,11 +56,6 @@ redisClient.on('end', () => console.log('Redis connection ended'));
 })();
 
 app.use(express.json());
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type'],
-}));
 
 // Health check
 app.get('/health', (req, res) => {
@@ -71,8 +65,8 @@ app.get('/health', (req, res) => {
 // Videos endpoint
 app.get('/api/videos', async (req, res) => {
   const { section, limit = 10, offset = 0 } = req.query;
-  const parsedLimit = Math.max(1, Math.min(100, parseInt(limit)));
-  const parsedOffset = Math.max(0, parseInt(offset));
+  const parsedLimit = Math.max(1, Math.min(100, parseInt(limit))); // Between 1 and 100
+  const parsedOffset = Math.max(0, parseInt(offset)); // Non-negative
   const cacheKey = section ? `videos:${section}:${parsedLimit}:${parsedOffset}` : `videos:all:${parsedLimit}:${parsedOffset}`;
 
   try {
