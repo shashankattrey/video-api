@@ -83,7 +83,7 @@ app.get('/api/videos', async (req, res) => {
     const result = await pool.query(query);
     console.log('Videos returned from DB:', result.rows.length);
 
-    await redisClient.setEx(cacheKey, 3600, JSON.stringify(result.rows));
+    await redisClient.setEx(cacheKey, 300, JSON.stringify(result.rows));
     console.log(`Cached ${cacheKey} in Redis`);
     res.json(result.rows);
   } catch (err) {
