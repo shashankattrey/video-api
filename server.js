@@ -2,12 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const { Pool } = require('pg');
 const redis = require('redis');
-const crypto = require('crypto');
 const app = express();
 const port = process.env.PORT || 3000;
 
 // Validate environment variables
-const requiredEnvVars = ['DATABASE_URL'];
+const requiredEnvVars = ['DATABASE_URL', 'REDIS_URL'];
 requiredEnvVars.forEach((varName) => {
   if (!process.env[varName]) {
     console.error(`Error: Missing required environment variable ${varName}`);
@@ -40,7 +39,7 @@ pool.connect((err, client, release) => {
 
 // Redis connection
 const redisClient = redis.createClient({
-  url: process.env.REDIS_URL || 'redis://localhost:6379',
+  url: process.env.REDIS_URL,
 });
 redisClient.on('error', (err) => console.error('Redis error:', err.message));
 redisClient.on('connect', () => console.log('Redis connected'));
@@ -57,9 +56,17 @@ redisClient.on('end', () => console.log('Redis connection ended'));
 
 app.use(express.json());
 
-// Generate unique referral code
-const generateReferralCode = () => {
-  return crypto.randomBytes(6).toString('hex'); // 12-character hex string
+// Generate unique referral code starting with BGSHWR
+const generateReferralCode = async () => {
+  let code;
+  let exists;
+  do {
+    const randomNumber = Math.floor(100000 + Math.random() * 900000); // 6-digit number
+    code = `BGSHWR${randomNumber}`;
+    const result = await pool.query('SELECT 1 FROM users WHERE referral_code = $1', [code]);
+    exists = result.rows.length > 0;
+  } while (exists);
+  return code;
 };
 
 // Health check
@@ -107,7 +114,7 @@ app.post('/api/register-device', async (req, res) => {
 
   try {
     // Check if device is already registered
-    const existingUserQuery = 'SELECT id, coins, referral_code, has_reviewed FROM users WHERE device_id = $1';
+    const existingUserQuery = 'SELECT id, coins, referral_code, has_reviewed, share_count FROM users WHERE device_id = $1';
     const existingUserResult = await pool.query(existingUserQuery, [device_id]);
     if (existingUserResult.rows.length) {
       const user = existingUserResult.rows[0];
@@ -118,8 +125,8 @@ app.post('/api/register-device', async (req, res) => {
         referral_code: user.referral_code,
         referral_url: `bageshwardham://refer?ref=${user.referral_code}`,
         has_reviewed: user.has_reviewed,
+        share_count: user.share_count,
       };
-      // Cache user data in Redis
       await redisClient.setEx(`user:${user.id}`, 3600, JSON.stringify(userData));
       console.log(`Cached user:${user.id} in Redis`);
       console.log('Device already registered:', userData);
@@ -136,22 +143,20 @@ app.post('/api/register-device', async (req, res) => {
         const referrer = referrerResult.rows[0];
         referredBy = referral_code;
         coins += 10; // Award 10 coins to new user
-        // Update referrer's coins
         await pool.query('UPDATE users SET coins = coins + 10 WHERE id = $1', [referrer.id]);
-        // Invalidate referrer's cache
         await redisClient.del(`user:${referrer.id}`);
         console.log(`Awarded 10 coins to referrer with ID ${referrer.id}`);
       }
     }
 
     // Register new device
-    const newReferralCode = generateReferralCode();
+    const newReferralCode = await generateReferralCode();
     const query = `
-      INSERT INTO users (device_id, coins, referral_code, referred_by, has_reviewed)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING id, device_id, coins, referral_code, has_reviewed;
+      INSERT INTO users (device_id, coins, referral_code, referred_by, has_reviewed, share_count)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id, device_id, coins, referral_code, has_reviewed, share_count;
     `;
-    const values = [device_id, coins, newReferralCode, referredBy, false];
+    const values = [device_id, coins, newReferralCode, referredBy, false, 0];
     const result = await pool.query(query, values);
 
     const user = result.rows[0];
@@ -162,9 +167,9 @@ app.post('/api/register-device', async (req, res) => {
       referral_code: user.referral_code,
       referral_url: `bageshwardham://refer?ref=${user.referral_code}`,
       has_reviewed: user.has_reviewed,
+      share_count: user.share_count,
     };
 
-    // Cache user data in Redis
     await redisClient.setEx(`user:${user.id}`, 3600, JSON.stringify(userData));
     console.log(`Cached user:${user.id} in Redis`);
 
@@ -182,15 +187,13 @@ app.get('/api/user/:id', async (req, res) => {
   const cacheKey = `user:${id}`;
 
   try {
-    // Check Redis cache
     const cachedData = await redisClient.get(cacheKey);
     if (cachedData) {
       console.log(`Cache hit for ${cacheKey}`);
       return res.json(JSON.parse(cachedData));
     }
 
-    // Fetch from database
-    const query = 'SELECT id, device_id, coins, referral_code, has_reviewed FROM users WHERE id = $1';
+    const query = 'SELECT id, device_id, coins, referral_code, has_reviewed, share_count FROM users WHERE id = $1';
     const result = await pool.query(query, [id]);
     if (!result.rows.length) {
       console.log(`User not found for ID ${id}`);
@@ -205,14 +208,11 @@ app.get('/api/user/:id', async (req, res) => {
       referral_code: user.referral_code,
       referral_url: `bageshwardham://refer?ref=${user.referral_code}`,
       has_reviewed: user.has_reviewed,
+      share_count: user.share_count,
     };
 
-    // Cache user data in Redis
     await redisClient.setEx(cacheKey, 3600, JSON.stringify(userData));
-    console.log(`Cachedwaterfall((req, res, next) => {
-  res.locals.waterfall = true;
-  return next();
-});
+    console.log(`Cached user:${id} in Redis`);
     res.json(userData);
   } catch (error) {
     console.error('Error fetching user:', error.stack);
@@ -220,7 +220,7 @@ app.get('/api/user/:id', async (req, res) => {
   }
 });
 
-// Submit review and award coins
+// Record Play Store review initiation and award coins
 app.post('/api/submit-review', async (req, res) => {
   const { user_id } = req.body;
   if (!user_id) {
@@ -229,7 +229,6 @@ app.post('/api/submit-review', async (req, res) => {
   }
 
   try {
-    // Check if user exists and hasn't reviewed
     const userQuery = 'SELECT coins, has_reviewed FROM users WHERE id = $1';
     const userResult = await pool.query(userQuery, [user_id]);
     if (!userResult.rows.length) {
@@ -243,12 +242,11 @@ app.post('/api/submit-review', async (req, res) => {
       return res.status(400).json({ error: 'User has already submitted a review' });
     }
 
-    // Award 50 coins and mark as reviewed
     const updateQuery = `
       UPDATE users
       SET coins = coins + 50, has_reviewed = TRUE
       WHERE id = $1
-      RETURNING id, device_id, coins, referral_code, has_reviewed;
+      RETURNING id, device_id, coins, referral_code, has_reviewed, share_count;
     `;
     const updateResult = await pool.query(updateQuery, [user_id]);
 
@@ -260,21 +258,86 @@ app.post('/api/submit-review', async (req, res) => {
       referral_code: updatedUser.referral_code,
       referral_url: `bageshwardham://refer?ref=${updatedUser.referral_code}`,
       has_reviewed: updatedUser.has_reviewed,
+      share_count: updatedUser.share_count,
     };
 
-    // Invalidate Redis cache
     await redisClient.del(`user:${user_id}`);
     console.log(`Invalidated cache for user:${user_id}`);
 
-    // Cache updated user data
     await redisClient.setEx(`user:${user_id}`, 3600, JSON.stringify(userData));
     console.log(`Cached user:${user_id} in Redis`);
 
-    console.log(`Awarded 50 coins to user ID ${user_id} for review`);
+    console.log(`Awarded 50 coins to user ID ${user_id} for Play Store review`);
     res.json(userData);
   } catch (error) {
     console.error('Error during review submission:', error.stack);
     res.status(500).json({ error: 'Failed to submit review', details: error.message });
+  }
+});
+
+// Record app share and award coins
+app.post('/api/share-app', async (req, res) => {
+  const { user_id, share_id } = req.body;
+  if (!user_id || !share_id) {
+    console.log('Share failed: Missing user_id or share_id');
+    return res.status(400).json({ error: 'Missing user_id or share_id' });
+  }
+
+  try {
+    const userQuery = 'SELECT coins, share_count FROM users WHERE id = $1';
+    const userResult = await pool.query(userQuery, [user_id]);
+    if (!userResult.rows.length) {
+      console.log(`User not found for ID ${user_id}`);
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const shareKey = `share:${user_id}:${share_id}`;
+    const existingShare = await redisClient.get(shareKey);
+    if (existingShare) {
+      console.log(`Duplicate share detected for user ID ${user_id}, share_id ${share_id}`);
+      return res.status(400).json({ error: 'Share already recorded' });
+    }
+
+    const shareQuery = `
+      INSERT INTO shares (user_id, share_id)
+      VALUES ($1, $2)
+      RETURNING id;
+    `;
+    await pool.query(shareQuery, [user_id, share_id]);
+
+    const updateQuery = `
+      UPDATE users
+      SET coins = coins + 10, share_count = share_count + 1
+      WHERE id = $1
+      RETURNING id, device_id, coins, referral_code, has_reviewed, share_count;
+    `;
+    const updateResult = await pool.query(updateQuery, [user_id]);
+
+    const updatedUser = updateResult.rows[0];
+    const userData = {
+      id: updatedUser.id,
+      device_id: updatedUser.device_id,
+      coins: updatedUser.coins,
+      referral_code: updatedUser.referral_code,
+      referral_url: `bageshwardham://refer?ref=${updatedUser.referral_code}`,
+      has_reviewed: updatedUser.has_reviewed,
+      share_count: updatedUser.share_count,
+    };
+
+    await redisClient.setEx(shareKey, 24 * 3600, 'recorded');
+    console.log(`Recorded share for user ID ${user_id}, share_id ${share_id}`);
+
+    await redisClient.del(`user:${user_id}`);
+    console.log(`Invalidated cache for user:${user_id}`);
+
+    await redisClient.setEx(`user:${user_id}`, 3600, JSON.stringify(userData));
+    console.log(`Cached user:${user_id} in Redis`);
+
+    console.log(`Awarded 10 coins to user ID ${user_id} for app share`);
+    res.json(userData);
+  } catch (error) {
+    console.error('Error during app share:', error.stack);
+    res.status(500).json({ error: 'Failed to record share', details: error.message });
   }
 });
 
