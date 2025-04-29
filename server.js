@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const { Pool } = require('pg');
 const redis = require('redis');
-const bcrypt = require('bcrypt');
+const crypto = require('crypto');
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -57,16 +57,21 @@ redisClient.on('end', () => console.log('Redis connection ended'));
 
 app.use(express.json());
 
+// Generate unique referral code
+const generateReferralCode = () => {
+  return crypto.randomBytes(6).toString('hex'); // 12-character hex string
+};
+
 // Health check
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// Videos endpoint
+// Videos endpoint (unchanged)
 app.get('/api/videos', async (req, res) => {
   const { section, limit = 10, offset = 0 } = req.query;
-  const parsedLimit = Math.max(1, Math.min(100, parseInt(limit))); // Between 1 and 100
-  const parsedOffset = Math.max(0, parseInt(offset)); // Non-negative
+  const parsedLimit = Math.max(1, Math.min(100, parseInt(limit)));
+  const parsedOffset = Math.max(0, parseInt(offset));
   const cacheKey = section ? `videos:${section}:${parsedLimit}:${parsedOffset}` : `videos:all:${parsedLimit}:${parsedOffset}`;
 
   try {
@@ -92,77 +97,184 @@ app.get('/api/videos', async (req, res) => {
   }
 });
 
-// Sign-up with Email/Password
-app.post('/api/signup', async (req, res) => {
-  const { email, password, full_name } = req.body;
-  if (!email || !password || !full_name) {
-    console.log('Signup failed: Missing fields', { email, password, full_name });
-    return res.status(400).json({ error: 'Missing required fields' });
+// Register device and handle referral
+app.post('/api/register-device', async (req, res) => {
+  const { device_id, referral_code } = req.body;
+  if (!device_id) {
+    console.log('Device registration failed: Missing device_id');
+    return res.status(400).json({ error: 'Missing device_id' });
   }
 
   try {
-    const hashedPassword = await bcrypt.hash(password, 10);
-    console.log('Generated hash for signup:', hashedPassword);
-
-    const query = `
-      INSERT INTO users (email, password, full_name)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (email)
-      DO NOTHING
-      RETURNING id, email, full_name;
-    `;
-    const values = [email, hashedPassword, full_name];
-    const result = await pool.query(query, values);
-
-    if (!result.rows.length) {
-      console.log('Signup failed: Email already exists', { email });
-      return res.status(409).json({ error: 'Email already exists' });
+    // Check if device is already registered
+    const existingUserQuery = 'SELECT id, coins, referral_code, has_reviewed FROM users WHERE device_id = $1';
+    const existingUserResult = await pool.query(existingUserQuery, [device_id]);
+    if (existingUserResult.rows.length) {
+      const user = existingUserResult.rows[0];
+      const userData = {
+        id: user.id,
+        device_id,
+        coins: user.coins,
+        referral_code: user.referral_code,
+        referral_url: `bageshwardham://refer?ref=${user.referral_code}`,
+        has_reviewed: user.has_reviewed,
+      };
+      // Cache user data in Redis
+      await redisClient.setEx(`user:${user.id}`, 3600, JSON.stringify(userData));
+      console.log(`Cached user:${user.id} in Redis`);
+      console.log('Device already registered:', userData);
+      return res.json(userData);
     }
 
-    console.log('Signup successful:', result.rows[0]);
-    res.status(201).json(result.rows[0]);
+    // Handle referral logic
+    let coins = 0;
+    let referredBy = null;
+    if (referral_code) {
+      const referrerQuery = 'SELECT id, coins FROM users WHERE referral_code = $1';
+      const referrerResult = await pool.query(referrerQuery, [referral_code]);
+      if (referrerResult.rows.length) {
+        const referrer = referrerResult.rows[0];
+        referredBy = referral_code;
+        coins += 10; // Award 10 coins to new user
+        // Update referrer's coins
+        await pool.query('UPDATE users SET coins = coins + 10 WHERE id = $1', [referrer.id]);
+        // Invalidate referrer's cache
+        await redisClient.del(`user:${referrer.id}`);
+        console.log(`Awarded 10 coins to referrer with ID ${referrer.id}`);
+      }
+    }
+
+    // Register new device
+    const newReferralCode = generateReferralCode();
+    const query = `
+      INSERT INTO users (device_id, coins, referral_code, referred_by, has_reviewed)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id, device_id, coins, referral_code, has_reviewed;
+    `;
+    const values = [device_id, coins, newReferralCode, referredBy, false];
+    const result = await pool.query(query, values);
+
+    const user = result.rows[0];
+    const userData = {
+      id: user.id,
+      device_id: user.device_id,
+      coins: user.coins,
+      referral_code: user.referral_code,
+      referral_url: `bageshwardham://refer?ref=${user.referral_code}`,
+      has_reviewed: user.has_reviewed,
+    };
+
+    // Cache user data in Redis
+    await redisClient.setEx(`user:${user.id}`, 3600, JSON.stringify(userData));
+    console.log(`Cached user:${user.id} in Redis`);
+
+    console.log('Device registered:', userData);
+    res.status(201).json(userData);
   } catch (error) {
-    console.error('Error during signup:', error.stack);
-    res.status(500).json({ error: 'Failed to sign up', details: error.message });
+    console.error('Error during device registration:', error.stack);
+    res.status(500).json({ error: 'Failed to register device', details: error.message });
   }
 });
 
-// Sign-in with Email/Password
-app.post('/api/signin', async (req, res) => {
-  const { email, password } = req.body;
-  console.log('Sign-in attempt:', { email, password });
-
-  if (!email || !password) {
-    console.log('Sign-in failed: Missing email or password');
-    return res.status(400).json({ error: 'Missing email or password' });
-  }
+// Get user details
+app.get('/api/user/:id', async (req, res) => {
+  const { id } = req.params;
+  const cacheKey = `user:${id}`;
 
   try {
-    const query = 'SELECT id, email, password, full_name FROM users WHERE email = $1';
-    const result = await pool.query(query, [email]);
-    console.log('DB result:', result.rows);
+    // Check Redis cache
+    const cachedData = await redisClient.get(cacheKey);
+    if (cachedData) {
+      console.log(`Cache hit for ${cacheKey}`);
+      return res.json(JSON.parse(cachedData));
+    }
 
+    // Fetch from database
+    const query = 'SELECT id, device_id, coins, referral_code, has_reviewed FROM users WHERE id = $1';
+    const result = await pool.query(query, [id]);
     if (!result.rows.length) {
-      console.log('Sign-in failed: No user found for', email);
-      return res.status(401).json({ error: 'Invalid email or password' });
+      console.log(`User not found for ID ${id}`);
+      return res.status(404).json({ error: 'User not found' });
     }
 
     const user = result.rows[0];
-    console.log('Stored password hash:', user.password);
+    const userData = {
+      id: user.id,
+      device_id: user.device_id,
+      coins: user.coins,
+      referral_code: user.referral_code,
+      referral_url: `bageshwardham://refer?ref=${user.referral_code}`,
+      has_reviewed: user.has_reviewed,
+    };
 
-    const isMatch = await bcrypt.compare(password, user.password || '');
-    console.log('Password match:', isMatch);
+    // Cache user data in Redis
+    await redisClient.setEx(cacheKey, 3600, JSON.stringify(userData));
+    console.log(`Cachedwaterfall((req, res, next) => {
+  res.locals.waterfall = true;
+  return next();
+});
+    res.json(userData);
+  } catch (error) {
+    console.error('Error fetching user:', error.stack);
+    res.status(500).json({ error: 'Failed to fetch user', details: error.message });
+  }
+});
 
-    if (!isMatch) {
-      console.log('Sign-in failed: Password mismatch for', email);
-      return res.status(401).json({ error: 'Invalid email or password' });
+// Submit review and award coins
+app.post('/api/submit-review', async (req, res) => {
+  const { user_id } = req.body;
+  if (!user_id) {
+    console.log('Review submission failed: Missing user_id');
+    return res.status(400).json({ error: 'Missing user_id' });
+  }
+
+  try {
+    // Check if user exists and hasn't reviewed
+    const userQuery = 'SELECT coins, has_reviewed FROM users WHERE id = $1';
+    const userResult = await pool.query(userQuery, [user_id]);
+    if (!userResult.rows.length) {
+      console.log(`User not found for ID ${user_id}`);
+      return res.status(404).json({ error: 'User not found' });
     }
 
-    console.log('Sign-in successful:', { id: user.id, email: user.email, full_name: user.full_name });
-    res.json({ id: user.id, email: user.email, full_name: user.full_name });
+    const user = userResult.rows[0];
+    if (user.has_reviewed) {
+      console.log(`User ID ${user_id} has already submitted a review`);
+      return res.status(400).json({ error: 'User has already submitted a review' });
+    }
+
+    // Award 50 coins and mark as reviewed
+    const updateQuery = `
+      UPDATE users
+      SET coins = coins + 50, has_reviewed = TRUE
+      WHERE id = $1
+      RETURNING id, device_id, coins, referral_code, has_reviewed;
+    `;
+    const updateResult = await pool.query(updateQuery, [user_id]);
+
+    const updatedUser = updateResult.rows[0];
+    const userData = {
+      id: updatedUser.id,
+      device_id: updatedUser.device_id,
+      coins: updatedUser.coins,
+      referral_code: updatedUser.referral_code,
+      referral_url: `bageshwardham://refer?ref=${updatedUser.referral_code}`,
+      has_reviewed: updatedUser.has_reviewed,
+    };
+
+    // Invalidate Redis cache
+    await redisClient.del(`user:${user_id}`);
+    console.log(`Invalidated cache for user:${user_id}`);
+
+    // Cache updated user data
+    await redisClient.setEx(`user:${user_id}`, 3600, JSON.stringify(userData));
+    console.log(`Cached user:${user_id} in Redis`);
+
+    console.log(`Awarded 50 coins to user ID ${user_id} for review`);
+    res.json(userData);
   } catch (error) {
-    console.error('Error during signin:', error.stack);
-    res.status(500).json({ error: 'Failed to sign in', details: error.message });
+    console.error('Error during review submission:', error.stack);
+    res.status(500).json({ error: 'Failed to submit review', details: error.message });
   }
 });
 
