@@ -278,9 +278,19 @@ app.post('/api/submit-review', async (req, res) => {
 // Record app share and award coins
 app.post('/api/share-app', async (req, res) => {
   const { user_id, share_id } = req.body;
+
   if (!user_id || !share_id) {
     console.log('Share failed: Missing user_id or share_id');
     return res.status(400).json({ error: 'Missing user_id or share_id' });
+  }
+  if (isNaN(parseInt(user_id))) {
+    console.log('Share failed: Invalid user_id format');
+    return res.status(400).json({ error: 'Invalid user_id format' });
+  }
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(share_id)) {
+    console.log('Share failed: Invalid share_id format');
+    return res.status(400).json({ error: 'Invalid share_id format' });
   }
 
   try {
@@ -291,54 +301,55 @@ app.post('/api/share-app', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const shareKey = `share:${user_id}:${share_id}`;
-    const existingShare = await redisClient.get(shareKey);
-    if (existingShare) {
+    const shareCheckQuery = 'SELECT 1 FROM shares WHERE user_id = $1 AND share_id = $2';
+    const shareCheckResult = await pool.query(shareCheckQuery, [user_id, share_id]);
+    if (shareCheckResult.rows.length) {
       console.log(`Duplicate share detected for user ID ${user_id}, share_id ${share_id}`);
       return res.status(400).json({ error: 'Share already recorded' });
     }
 
-    const shareQuery = `
-      INSERT INTO shares (user_id, share_id)
-      VALUES ($1, $2)
-      RETURNING id;
-    `;
-    await pool.query(shareQuery, [user_id, share_id]);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const shareQuery = `
+        INSERT INTO shares (user_id, share_id)
+        VALUES ($1, $2)
+        RETURNING id;
+      `;
+      await client.query(shareQuery, [user_id, share_id]);
+      const updateQuery = `
+        UPDATE users
+        SET coins = coins + 10, share_count = share_count + 1
+        WHERE id = $1
+        RETURNING id, device_id, coins, referral_code, has_reviewed, share_count;
+      `;
+      const updateResult = await client.query(updateQuery, [user_id]);
+      await client.query('COMMIT');
 
-    const updateQuery = `
-      UPDATE users
-      SET coins = coins + 10, share_count = share_count + 1
-      WHERE id = $1
-      RETURNING id, device_id, coins, referral_code, has_reviewed, share_count;
-    `;
-    const updateResult = await pool.query(updateQuery, [user_id]);
+      const updatedUser = updateResult.rows[0];
+      const userData = {
+        id: updatedUser.id,
+        device_id: updatedUser.device_id,
+        coins: updatedUser.coins,
+        referral_code: updatedUser.referral_code,
+        referral_url: `bageshwardham://refer?ref=${updatedUser.referral_code}`,
+        has_reviewed: updatedUser.has_reviewed,
+        share_count: updatedUser.share_count,
+      };
 
-    const updatedUser = updateResult.rows[0];
-    const userData = {
-      id: updatedUser.id,
-      device_id: updatedUser.device_id,
-      coins: updatedUser.coins,
-      referral_code: updatedUser.referral_code,
-      referral_url: `bageshwardham://refer?ref=${updatedUser.referral_code}`,
-      has_reviewed: updatedUser.has_reviewed,
-      share_count: updatedUser.share_count,
-    };
-
-    await redisClient.setEx(shareKey, 24 * 3600, 'recorded');
-    console.log(`Recorded share for user ID ${user_id}, share_id ${share_id}`);
-
-    await redisClient.del(`user:${user_id}`);
-    console.log(`Invalidated cache for user:${user_id}`);
-
-    await redisClient.setEx(`user:${user_id}`, 3600, JSON.stringify(userData));
-    console.log(`Cached user:${user_id} in Redis`);
-
-    console.log(`Awarded 10 coins to user ID ${user_id} for app share`);
-    res.json(userData);
+      console.log(`Recorded share for user ID ${user_id}, share_id ${share_id}`);
+      console.log(`Awarded 10 coins to user ID ${user_id} for app share`);
+      res.json(userData);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   } catch (error) {
     console.error('Error during app share:', error.stack);
-    res.status(500).json({ error: 'Failed to record share', details: error.message });
+    const errorMessage = process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message;
+    res.status(500).json({ error: 'Failed to record share', details: errorMessage });
   }
 });
-
 app.listen(port, () => console.log(`Server running on port ${port}`));
