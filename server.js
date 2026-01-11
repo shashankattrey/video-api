@@ -187,6 +187,31 @@ app.post('/api/session/end', async (req, res) => {
   }
 });
 
+// 🔥 DEBUG ENDPOINT - ADD THIS EXACTLY BEFORE app.listen()
+app.get('/api/debug/sessions', async (req, res) => {
+  console.log('🔍 [DEBUG] /api/debug/sessions called');
+  
+  try {
+    const count = await pool.query('SELECT COUNT(*) as total FROM user_sessions');
+    const recent = await pool.query(`
+      SELECT s.*, u.name, u.phone 
+      FROM user_sessions s 
+      LEFT JOIN users u ON s.device_id = u.device_id 
+      ORDER BY s.created_at DESC LIMIT 5
+    `);
+    
+    console.log(`📊 DEBUG: ${count.rows[0].total} total sessions found`);
+    res.json({
+      success: true,
+      total_sessions: parseInt(count.rows[0].total),
+      recent_sessions: recent.rows
+    });
+  } catch (error) {
+    console.error('💥 DEBUG ERROR:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 // 🔥 5. CHECK USER BY DEVICE - FULL PREMIUM STATUS
 app.get('/api/user/device/:device_id', async (req, res) => {
