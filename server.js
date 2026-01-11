@@ -109,29 +109,51 @@ app.post('/api/generate-upi-link', paymentLimiter, async (req, res) => {
 });
 
 // 🔥 3. SESSION START
+// 🔥 FIXED SESSION START - Updates last_active IMMEDIATELY
 app.post('/api/session/start', async (req, res) => {
   const { device_id, session_id } = req.body;
+  
+  console.log('📥 SESSION/START:', { device_id: device_id?.slice(-8), session_id: session_id?.slice(0,12) });
   
   if (!device_id || !session_id) {
     return res.status(400).json({ error: 'Missing data' });
   }
-  
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     
-    const result = await client.query(`
-      INSERT INTO user_sessions (device_id, session_id, start_time, session_duration) 
-      VALUES ($1, $2, NOW(), 0)
+    // 🔥 STEP 1: Create session
+    const sessionResult = await client.query(`
+      INSERT INTO user_sessions (device_id, session_id, start_time, session_duration, created_at)
+      VALUES ($1, $2, NOW(), 0, NOW())
       RETURNING id, device_id, session_id
     `, [device_id, session_id]);
     
-    await redisClient.setEx(`session:${session_id}`, 3600, JSON.stringify({ device_id }));
-    await client.query('COMMIT');
+    // 🔥 STEP 2: Update users.last_active + analytics on EVERY app open
+    const userResult = await client.query(`
+      INSERT INTO users (device_id, app_opens, total_session_duration, last_active, coins)
+      VALUES ($1, 1, 0, NOW(), 0)
+      ON CONFLICT (device_id) 
+      DO UPDATE SET 
+        app_opens = users.app_opens + 1,
+        last_active = NOW(),
+        avg_session_duration = CASE 
+          WHEN users.app_opUPS = 0 THEN 0
+          ELSE GREATEST(1, users.total_session_duration::numeric / users.app_opens)
+        END::integer
+      RETURNING device_id, app_opens, last_active
+    `, [device_id]);
     
-    res.json({ success: true, session_id: result.rows[0].id });
+    console.log('✅ SESSION START:', sessionResult.rows[0]);
+    console.log('✅ USER ACTIVE:', userResult.rows[0]);
+    
+    await client.query('COMMIT');
+    res.json({ success: true, session_id: sessionResult.rows[0].id });
+    
   } catch (error) {
     await client.query('ROLLBACK');
+    console.error('SESSION/START ERROR:', error.message);
     res.status(500).json({ error: error.message });
   } finally {
     client.release();
