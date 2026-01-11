@@ -112,21 +112,52 @@ app.post('/api/generate-upi-link', async (req, res) => {
   });
 });
 
-// 🔥 3. SESSION START
+// 🔥 3. SESSION START - NOW SAVES TO user_sessions TABLE!
 app.post('/api/session/start', async (req, res) => {
   const { device_id, session_id } = req.body;
   if (!device_id || !session_id) return res.status(400).json({ error: 'Missing data' });
-  await redisClient.setEx(`session:${session_id}`, 3600, JSON.stringify({ device_id, start_time: Date.now() }));
-  res.json({ success: true });
-});
-
-// 🔥 4. SESSION END
-app.post('/api/session/end', async (req, res) => {
-  const { device_id, session_id, session_duration } = req.body;
-  if (!device_id || !session_id || !session_duration) return res.status(400).json({ error: 'Missing data' });
   
   try {
+    // ✅ INSERT INTO user_sessions table
     await pool.query(`
+      INSERT INTO user_sessions (device_id, session_id, start_time, session_duration) 
+      VALUES ($1, $2, NOW(), 0)
+    `, [device_id, session_id]);
+    
+    // Redis for fast lookup
+    await redisClient.setEx(`session:${session_id}`, 3600, JSON.stringify({ 
+      device_id, 
+      start_time: Date.now() 
+    }));
+    
+    console.log(`⏱️ Session START: ${session_id.slice(0,8)} (${device_id.slice(-8)})`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Session start error:', error);
+    res.status(500).json({ error: 'Session start failed' });
+  }
+});
+
+// 🔥 4. SESSION END - UPDATES user_sessions + users tables
+app.post('/api/session/end', async (req, res) => {
+  const { device_id, session_id, session_duration } = req.body;
+  if (!device_id || !session_id || !session_duration) {
+    return res.status(400).json({ error: 'Missing data' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    // ✅ UPDATE user_sessions table
+    await client.query(`
+      UPDATE user_sessions 
+      SET session_duration = $1, end_time = NOW()
+      WHERE session_id = $2
+    `, [session_duration, session_id]);
+    
+    // ✅ UPDATE users table (your existing analytics)
+    await client.query(`
       UPDATE users SET 
         app_opens = COALESCE(app_opens, 0) + 1,
         total_session_duration = COALESCE(total_session_duration, 0) + $1,
@@ -137,11 +168,19 @@ app.post('/api/session/end', async (req, res) => {
         END::integer
       WHERE device_id = $2
     `, [session_duration, device_id]);
+    
+    await client.query('COMMIT');
+    console.log(`✅ Session END: ${session_id.slice(0,8)} (${session_duration}s)`);
     res.json({ success: true });
   } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Session end error:', error);
     res.status(500).json({ error: 'Session failed' });
+  } finally {
+    client.release();
   }
 });
+
 
 // 🔥 5. CHECK USER BY DEVICE - FULL PREMIUM STATUS
 app.get('/api/user/device/:device_id', async (req, res) => {
