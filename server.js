@@ -113,51 +113,60 @@ app.post('/api/generate-upi-link', async (req, res) => {
 });
 
 // 🔥 3. SESSION START - NOW SAVES TO user_sessions TABLE!
+// 🔥 3. SESSION START - PERFECT SCHEMA MATCH
 app.post('/api/session/start', async (req, res) => {
   const { device_id, session_id } = req.body;
-  if (!device_id || !session_id) return res.status(400).json({ error: 'Missing data' });
+  console.log('📥 [SESSION/START] Received:', { device_id: device_id?.slice(-8), session_id: session_id?.slice(0,12) });
+  
+  if (!device_id || !session_id) {
+    console.log('❌ [SESSION/START] Missing data');
+    return res.status(400).json({ error: 'Missing data' });
+  }
   
   try {
-    // ✅ INSERT INTO user_sessions table
-    await pool.query(`
+    const result = await pool.query(`
       INSERT INTO user_sessions (device_id, session_id, start_time, session_duration) 
       VALUES ($1, $2, NOW(), 0)
+      RETURNING id, device_id, session_id
     `, [device_id, session_id]);
     
-    // Redis for fast lookup
-    await redisClient.setEx(`session:${session_id}`, 3600, JSON.stringify({ 
-      device_id, 
-      start_time: Date.now() 
-    }));
+    console.log('✅ [SESSION/START] INSERTED:', result.rows[0]);
+    await redisClient.setEx(`session:${session_id}`, 3600, JSON.stringify({ device_id }));
     
-    console.log(`⏱️ Session START: ${session_id.slice(0,8)} (${device_id.slice(-8)})`);
-    res.json({ success: true });
+    res.json({ success: true, session_id: result.rows[0].id });
   } catch (error) {
-    console.error('Session start error:', error);
-    res.status(500).json({ error: 'Session start failed' });
+    console.error('💥 [SESSION/START] ERROR:', error.message);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// 🔥 4. SESSION END - UPDATES user_sessions + users tables
+// 🔥 4. SESSION END - PERFECT SCHEMA MATCH (NO end_time column)
 app.post('/api/session/end', async (req, res) => {
   const { device_id, session_id, session_duration } = req.body;
+  console.log('📥 [SESSION/END] Received:', { 
+    device_id: device_id?.slice(-8), 
+    session_id: session_id?.slice(0,12),
+    duration: session_duration 
+  });
+  
   if (!device_id || !session_id || !session_duration) {
+    console.log('❌ [SESSION/END] Missing data');
     return res.status(400).json({ error: 'Missing data' });
   }
 
-  const client = await pool.connect();
   try {
-    await client.query('BEGIN');
-    
-    // ✅ UPDATE user_sessions table
-    await client.query(`
+    // 🔥 UPDATE user_sessions table ONLY session_duration
+    const sessionResult = await pool.query(`
       UPDATE user_sessions 
-      SET session_duration = $1, end_time = NOW()
+      SET session_duration = $1
       WHERE session_id = $2
+      RETURNING id, device_id, session_duration
     `, [session_duration, session_id]);
     
-    // ✅ UPDATE users table (your existing analytics)
-    await client.query(`
+    console.log('✅ [SESSION/END] Updated:', sessionResult.rows[0] || 'NO MATCHING SESSION');
+    
+    // 🔥 Update users analytics
+    const userResult = await pool.query(`
       UPDATE users SET 
         app_opens = COALESCE(app_opens, 0) + 1,
         total_session_duration = COALESCE(total_session_duration, 0) + $1,
@@ -167,17 +176,14 @@ app.post('/api/session/end', async (req, res) => {
           ELSE (COALESCE(total_session_duration, 0) + $1)::numeric / (COALESCE(app_opens, 0) + 1)
         END::integer
       WHERE device_id = $2
+      RETURNING app_opens, total_session_duration
     `, [session_duration, device_id]);
     
-    await client.query('COMMIT');
-    console.log(`✅ Session END: ${session_id.slice(0,8)} (${session_duration}s)`);
+    console.log('✅ [SESSION/END] Users analytics:', userResult.rows[0] || 'NO USER');
     res.json({ success: true });
   } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('Session end error:', error);
-    res.status(500).json({ error: 'Session failed' });
-  } finally {
-    client.release();
+    console.error('💥 [SESSION/END] ERROR:', error.message);
+    res.status(500).json({ error: error.message });
   }
 });
 
