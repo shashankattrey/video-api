@@ -139,43 +139,86 @@ app.post('/api/session/start', async (req, res) => {
 });
 
 // 🔥 4. SESSION END (FIXED VERSION)
+// 🔥 4. SESSION END - PERFECTLY MATCHES YOUR SCHEMA
 app.post('/api/session/end', async (req, res) => {
   const { device_id, session_id, session_duration } = req.body;
   
-  if (!device_id || !session_id || !session_duration) {
-    return res.status(400).json({ error: 'Missing data' });
+  console.log('📥 [SESSION/END] Received:', { 
+    device_id: device_id?.slice(-8), 
+    session_id: session_id?.slice(0,12),
+    duration: session_duration 
+  });
+  
+  // VALIDATION
+  if (!device_id || !session_id || session_duration === undefined || session_duration < 0) {
+    console.log('❌ [SESSION/END] Invalid data');
+    return res.status(400).json({ error: 'Missing/invalid data' });
   }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     
-    // Update user_sessions
+    // 🔥 STEP 1: FIRST verify session exists for this device
+    const sessionCheck = await client.query(`
+      SELECT id, session_duration FROM user_sessions 
+      WHERE session_id = $1 AND device_id = $2
+    `, [session_id, device_id]);
+    
+    if (sessionCheck.rows.length === 0) {
+      console.log('⚠️ [SESSION/END] No session found for device+session_id');
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    
+    console.log('✅ [SESSION/END] Found session:', sessionCheck.rows[0]);
+
+    // 🔥 STEP 2: UPDATE user_sessions table
     const sessionResult = await client.query(`
       UPDATE user_sessions 
-      SET session_duration = $1, end_time = NOW()
-      WHERE session_id = $2
+      SET 
+        session_duration = $1,
+        end_time = NOW()
+      WHERE session_id = $2 AND device_id = $3
       RETURNING id, device_id, session_duration, end_time
-    `, [session_duration, session_id]);
+    `, [session_duration, session_id, device_id]);
     
-    // Update users analytics
+    console.log('✅ [SESSION/END] Session updated:', sessionResult.rows[0]);
+
+    // 🔥 STEP 3: UPDATE users table analytics + last_active
     const userResult = await client.query(`
-      UPDATE users SET 
+      UPDATE users 
+      SET 
         app_opens = COALESCE(app_opens, 0) + 1,
         total_session_duration = COALESCE(total_session_duration, 0) + $1,
         last_active = NOW(),
         avg_session_duration = CASE 
-          WHEN COALESCE(app_opens, 0) = 0 THEN $1 
-          ELSE (COALESCE(total_session_duration, 0) + $1)::numeric / (COALESCE(app_opens, 0) + 1)
+          WHEN COALESCE(app_opens, 0) = 0 THEN GREATEST(1, $1)
+          ELSE GREATEST(1, (COALESCE(total_session_duration, 0) + $1)::numeric / (COALESCE(app_opens, 0) + 1))
         END::integer
       WHERE device_id = $2
-      RETURNING app_opens, total_session_duration, last_active
+      RETURNING id, device_id, app_opens, total_session_duration, last_active, avg_session_duration
     `, [session_duration, device_id]);
     
+    console.log('✅ [SESSION/END] User updated:', userResult.rows[0] || 'No user found');
+
     await client.query('COMMIT');
-    res.json({ success: true });
+    
+    // Clear Redis cache
+    await redisClient.del(`session:${session_id}`);
+    await redisClient.del(`user_device:${device_id}`);
+    
+    res.json({ 
+      success: true,
+      updated: {
+        session: sessionResult.rows[0],
+        user: userResult.rows[0]
+      }
+    });
+    
   } catch (error) {
     await client.query('ROLLBACK');
+    console.error('💥 [SESSION/END] ERROR:', error.message);
     res.status(500).json({ error: error.message });
   } finally {
     client.release();
