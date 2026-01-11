@@ -260,6 +260,34 @@ app.post('/api/session/end', async (req, res) => {
   }
 });
 
+// Add to your server (after session/end)
+app.post('/api/session/auto-close', async (req, res) => {
+  console.log('🧹 AUTO-CLOSE running...');
+  
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`
+      UPDATE user_sessions 
+      SET 
+        end_time = NOW(),
+        session_duration = EXTRACT(EPOCH FROM (NOW() - start_time))::integer
+      WHERE end_time IS NULL 
+        AND NOW() - start_time > INTERVAL '2 minutes'
+        AND device_id IN (
+          SELECT device_id FROM users 
+          WHERE last_active < NOW() - INTERVAL '5 minutes'
+        )
+      RETURNING COUNT(*)
+    `);
+    
+    console.log(`🧹 Auto-closed ${result.rows[0].count || 0} sessions`);
+    res.json({ success: true, closed: result.rows[0].count || 0 });
+  } finally {
+    client.release();
+  }
+});
+
+
 // 🔥 5. DEBUG SESSIONS
 app.get('/api/debug/sessions', async (req, res) => {
   try {
