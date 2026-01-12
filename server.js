@@ -541,8 +541,8 @@ app.get('/api/app-version', async (req, res) => {
   try {
     res.json({
       success: true,
-      current_version: "9.0",        
-      min_required_version: "9.0",   
+      current_version: "10.0",        
+      min_required_version: "11.0",   
       is_force_update: false,         
       update_url: "https://play.google.com/store/apps/details?id=com.bageshwardham.app",
       message: "New Aarti features & bug fixes! Update now 🙏",
