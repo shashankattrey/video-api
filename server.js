@@ -536,6 +536,24 @@ app.post('/api/register-device', async (req, res) => {
   }
 });
 
+// 🔥 Add after /api/register-device
+app.get('/api/app-version', async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      current_version: 9.0",        // 👈 Change when you release new version
+      min_required_version: "9.0",   // 👈 Users below this = FORCE UPDATE
+      is_force_update: false,          // 👈 true = No "Later" button
+      update_url: "https://play.google.com/store/apps/details?id=com.bageshwardham.app",
+      message: "New Aarti features & bug fixes! Update now 🙏",
+      release_notes: "• Fixed referral tracking\n• New premium content\n• Better performance"
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Version check failed' });
+  }
+});
+
+
 // 🔥 12. USER BY ID
 app.get('/api/user/:id', async (req, res) => {
   const { id } = req.params;
