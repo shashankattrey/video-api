@@ -78,36 +78,61 @@ app.get('/api/pricing', async (req, res) => {
 
 // 🔥 2. GENERATE UPI LINK
 app.post('/api/generate-upi-link', paymentLimiter, async (req, res) => {
-  const { device_id, user_name } = req.body;
+  let { device_id, user_name } = req.body;  // ✅ FIXED: let (not const)
   
- if (!device_id || device_id.length < 6 || device_id.length > 100) {
+  console.log('📥 UPI Request:', { device_id, user_name });
+
+  // ✅ Validation - accepts your "7cf33578" (8 chars)
+  if (!device_id || device_id.length < 6 || device_id.length > 100) {
     return res.status(400).json({ 
       error: 'Invalid device_id length',
       debug: { received: device_id, length: device_id?.length }
     });
   }
-   device_id = device_id.replace(/^0+/, '').slice(0, 36);
   
+  // ✅ Clean device ID (remove leading zeros, max 36 chars)
+  device_id = device_id.replace(/^0+/, '').slice(0, 36);
+  
+  if (!user_name) user_name = 'BageshwarDham User';
+
   try {
-    const priceResult = await pool.query('SELECT price_rupees FROM premium_plans WHERE is_active = TRUE LIMIT 1');
+    // ✅ Dynamic price from DB
+    const priceResult = await pool.query(
+      'SELECT price_rupees FROM premium_plans WHERE is_active = TRUE LIMIT 1'
+    );
     const amount = priceResult.rows[0]?.price_rupees || 49;
-    const payment_id = `PAY_${device_id.slice(-8)}_${Date.now()}`;
-    const upi_id = process.env.UPI_ID || 'donate.help@kotak'; // Set in .env
     
+    // ✅ Unique payment ID using your device ID
+    const payment_id = `PAY_${device_id.slice(-8)}_${Date.now()}`;
+    const upi_id = process.env.UPI_ID || 'donate.help@kotak';
+    
+    // ✅ PERFECT UPI Deep Link - opens PhonePe/GPay directly
     const upi_link = `upi://pay?pa=${upi_id}&pn=${encodeURIComponent(user_name)}&am=${amount}&cu=INR&tn=${payment_id}`;
     const copy_text = `${amount} ${upi_id} ${payment_id}`;
 
-    await redisClient.setEx(`payment:${payment_id}`, 86400, JSON.stringify({
-      device_id, user_name, amount, status: 'pending'
-    }));
+    // ✅ Cache payment in Redis (24h)
+    await redisClient.setEx(
+      `payment:${payment_id}`, 
+      86400, 
+      JSON.stringify({ device_id, user_name, amount, status: 'pending' })
+    );
 
+    // ✅ COMPLETE Response - matches your app expectations
     res.json({
       success: true,
-      payment_id, device_id, user_name, amount,
-      upi_link, copy_text, qr_data: upi_link,
+      payment_id, 
+      device_id, 
+      user_name, 
+      amount,
+      upi_id,
+      upi_link,           // ← Your app uses this
+      copy_text, 
+      qr_data: upi_link,
       instructions: `Send ₹${amount} & share screenshot`
     });
+
   } catch (error) {
+    console.error('💥 UPI Error:', error);
     res.status(500).json({ error: 'Payment link generation failed' });
   }
 });
