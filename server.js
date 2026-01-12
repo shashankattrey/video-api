@@ -107,7 +107,7 @@ app.post('/api/generate-upi-link', paymentLimiter, async (req, res) => {
     const upi_id = process.env.UPI_ID || 'donate.help@kotak';
     
     // ✅ PERFECT UPI Deep Link - opens PhonePe/GPay directly
-    const upi_link = `upi://pay?pa=${upi_id}&pn=${encodeURIComponent(user_name)}&am=${amount}&cu=INR&tn=${payment_id}`;
+    const upi_link = `upi://pay?pa=${upi_id}&pn=${encodeURIComponent(user_name)}&am=${amount}&cu=INR&tn=${payment_id}&mode=02`;
     const copy_text = `${amount} ${upi_id} ${payment_id}`;
 
     // ✅ Cache payment in Redis (24h)
