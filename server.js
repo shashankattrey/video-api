@@ -623,6 +623,7 @@ app.post('/api/share-app', async (req, res) => {
   }
 });
 // 🔥 16. TRACK AARTI & LIVE KATHA CLICKS  ← ADD THIS ENTIRE BLOCK
+// 🔥 16. TRACK AARTI & LIVE KATHA CLICKS - CLICK TRACKING ONLY
 app.post('/api/track-premium-click', async (req, res) => {
   const { device_id, section, timestamp } = req.body;
   
@@ -637,7 +638,9 @@ app.post('/api/track-premium-click', async (req, res) => {
   try {
     await client.query('BEGIN');
     
-    // 🔥 UPSERT clicks
+    const pgTimestamp = new Date(timestamp || Date.now()).toISOString();
+    
+    // 🔥 1. ALWAYS track clicks in premium_clicks table
     const result = await client.query(`
       INSERT INTO premium_clicks (device_id, section, clicked_at, click_count) 
       VALUES ($1, $2, $3, 1)
@@ -647,22 +650,32 @@ app.post('/api/track-premium-click', async (req, res) => {
         last_clicked_at = $3,
         updated_at = NOW()
       RETURNING device_id, section, click_count
-    `, [device_id, section, timestamp || new Date()]);
+    `, [device_id, section, pgTimestamp]);
     
-    // 🔥 Update users table
-    await client.query(`
-      INSERT INTO users (device_id, premium_clicks, last_premium_click, last_section_clicked)
-      VALUES ($1, 1, $2, $3)
-      ON CONFLICT (device_id) 
-      DO UPDATE SET 
-        premium_clicks = COALESCE(users.premium_clicks, 0) + 1,
-        last_premium_click = $2,
-        last_section_clicked = $3
-    `, [device_id, timestamp || new Date(), section]);
+    // 🔥 2. ONLY update users table IF USER ALREADY EXISTS
+    const userCheck = await client.query(
+      'SELECT id FROM users WHERE device_id = $1', 
+      [device_id]
+    );
+    
+    if (userCheck.rows.length > 0) {
+      // ✅ EXISTING USER ONLY - Update tracking fields
+      await client.query(`
+        UPDATE users 
+        SET 
+          premium_clicks = COALESCE(premium_clicks, 0) + 1,
+          last_premium_click = $1,
+          last_section_clicked = $2,
+          last_active = NOW()
+        WHERE device_id = $3
+      `, [pgTimestamp, section, device_id]);
+      console.log(`🔄 USER ${device_id.slice(-8)}: ${result.rows[0].click_count} clicks`);
+    } else {
+      // ✅ NO USER? Just track clicks, skip user table
+      console.log(`⚠️ NO USER ${device_id.slice(-8)}: Clicks tracked only`);
+    }
     
     await client.query('COMMIT');
-    
-    console.log(`✅ ${section.toUpperCase()}: ${device_id.slice(-8)} → ${result.rows[0].click_count} clicks`);
     res.json({ success: true, section, clicks: result.rows[0].click_count });
     
   } catch (error) {
@@ -673,6 +686,7 @@ app.post('/api/track-premium-click', async (req, res) => {
     client.release();
   }
 });
+
 
 
 
