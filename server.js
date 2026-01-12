@@ -622,51 +622,59 @@ app.post('/api/share-app', async (req, res) => {
     client.release();
   }
 });
-// 🔥 17. PREMIUM CLICK DASHBOARD
-app.get('/api/analytics/premium-clicks', async (req, res) => {
+// 🔥 16. TRACK AARTI & LIVE KATHA CLICKS  ← ADD THIS ENTIRE BLOCK
+app.post('/api/track-premium-click', async (req, res) => {
+  const { device_id, section, timestamp } = req.body;
+  
+  console.log(`🔥 API HIT: ${section.toUpperCase()} → ${device_id.slice(-8)}`);
+  
+  if (!device_id || !section) {
+    console.log('❌ MISSING DATA');
+    return res.status(400).json({ error: 'Missing device_id or section' });
+  }
+
+  const client = await pool.connect();
   try {
-    const client = await pool.connect();
+    await client.query('BEGIN');
     
-    const [totalClicks, sectionStats, topUsers] = await Promise.all([
-      client.query('SELECT SUM(click_count) as total FROM premium_clicks'),
-      client.query(`
-        SELECT section, 
-               COUNT(DISTINCT device_id) as unique_users,
-               SUM(click_count) as total_clicks
-        FROM premium_clicks 
-        GROUP BY section 
-        ORDER BY total_clicks DESC
-      `),
-      client.query(`
-        SELECT u.device_id, u.name, u.phone, 
-               SUM(pc.click_count) as total_clicks,
-               u.last_section_clicked
-        FROM users u
-        LEFT JOIN premium_clicks pc ON u.device_id = pc.device_id
-        WHERE u.premium_clicks > 0
-        GROUP BY u.device_id, u.name, u.phone, u.last_section_clicked
-        ORDER BY total_clicks DESC 
-        LIMIT 10
-      `)
-    ]);
+    // 🔥 UPSERT clicks
+    const result = await client.query(`
+      INSERT INTO premium_clicks (device_id, section, clicked_at, click_count) 
+      VALUES ($1, $2, $3, 1)
+      ON CONFLICT (device_id, section) 
+      DO UPDATE SET 
+        click_count = premium_clicks.click_count + 1,
+        last_clicked_at = $3,
+        updated_at = NOW()
+      RETURNING device_id, section, click_count
+    `, [device_id, section, timestamp || new Date()]);
     
-    res.json({
-      success: true,
-      total_premium_clicks: parseInt(totalClicks.rows[0].total || 0),
-      section_stats: sectionStats.rows,
-      top_users: topUsers.rows,
-      avg_clicks_per_user: Math.round(
-        parseInt(totalClicks.rows[0].total || 0) / 
-        (await client.query('SELECT COUNT(DISTINCT device_id) as users FROM premium_clicks')).rows[0].users || 1
-      )
-    });
+    // 🔥 Update users table
+    await client.query(`
+      INSERT INTO users (device_id, premium_clicks, last_premium_click, last_section_clicked)
+      VALUES ($1, 1, $2, $3)
+      ON CONFLICT (device_id) 
+      DO UPDATE SET 
+        premium_clicks = COALESCE(users.premium_clicks, 0) + 1,
+        last_premium_click = $2,
+        last_section_clicked = $3
+    `, [device_id, timestamp || new Date(), section]);
     
-    client.release();
+    await client.query('COMMIT');
+    
+    console.log(`✅ ${section.toUpperCase()}: ${device_id.slice(-8)} → ${result.rows[0].click_count} clicks`);
+    res.json({ success: true, section, clicks: result.rows[0].click_count });
+    
   } catch (error) {
-    console.error('Analytics error:', error);
-    res.status(500).json({ error: 'Analytics failed' });
+    await client.query('ROLLBACK');
+    console.error('💥 Premium click ERROR:', error.message);
+    res.status(500).json({ error: 'Tracking failed' });
+  } finally {
+    client.release();
   }
 });
+
+
 
 // 🔥 HEALTH CHECK
 app.get('/health', (req, res) => {
