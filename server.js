@@ -622,6 +622,51 @@ app.post('/api/share-app', async (req, res) => {
     client.release();
   }
 });
+// 🔥 17. PREMIUM CLICK DASHBOARD
+app.get('/api/analytics/premium-clicks', async (req, res) => {
+  try {
+    const client = await pool.connect();
+    
+    const [totalClicks, sectionStats, topUsers] = await Promise.all([
+      client.query('SELECT SUM(click_count) as total FROM premium_clicks'),
+      client.query(`
+        SELECT section, 
+               COUNT(DISTINCT device_id) as unique_users,
+               SUM(click_count) as total_clicks
+        FROM premium_clicks 
+        GROUP BY section 
+        ORDER BY total_clicks DESC
+      `),
+      client.query(`
+        SELECT u.device_id, u.name, u.phone, 
+               SUM(pc.click_count) as total_clicks,
+               u.last_section_clicked
+        FROM users u
+        LEFT JOIN premium_clicks pc ON u.device_id = pc.device_id
+        WHERE u.premium_clicks > 0
+        GROUP BY u.device_id, u.name, u.phone, u.last_section_clicked
+        ORDER BY total_clicks DESC 
+        LIMIT 10
+      `)
+    ]);
+    
+    res.json({
+      success: true,
+      total_premium_clicks: parseInt(totalClicks.rows[0].total || 0),
+      section_stats: sectionStats.rows,
+      top_users: topUsers.rows,
+      avg_clicks_per_user: Math.round(
+        parseInt(totalClicks.rows[0].total || 0) / 
+        (await client.query('SELECT COUNT(DISTINCT device_id) as users FROM premium_clicks')).rows[0].users || 1
+      )
+    });
+    
+    client.release();
+  } catch (error) {
+    console.error('Analytics error:', error);
+    res.status(500).json({ error: 'Analytics failed' });
+  }
+});
 
 // 🔥 HEALTH CHECK
 app.get('/health', (req, res) => {
