@@ -104,10 +104,10 @@ app.post('/api/generate-upi-link', paymentLimiter, async (req, res) => {
     
     // ✅ Unique payment ID using your device ID
     const payment_id = `PAY_${device_id.slice(-8)}_${Date.now()}`;
-    const upi_id = process.env.UPI_ID || 'donate.help@kotak';
+    const upi_id = process.env.UPI_ID || '9549800020@pthdfc';
     
     // ✅ PERFECT UPI Deep Link - opens PhonePe/GPay directly
-    const upi_link = `upi://pay?pa=${upi_id}&pn=${encodeURIComponent(user_name)}&am=${amount}&cu=INR&tn=${payment_id}&mode=02`;
+    const upi_link = `upi://pay?pa=${upi_id}&pn=${encodeURIComponent(user_name)}&am=${amount}&cu=INR&tn=${payment_id}`;
     const copy_text = `${amount} ${upi_id} ${payment_id}`;
 
     // ✅ Cache payment in Redis (24h)
