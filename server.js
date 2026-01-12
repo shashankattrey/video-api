@@ -80,15 +80,19 @@ app.get('/api/pricing', async (req, res) => {
 app.post('/api/generate-upi-link', paymentLimiter, async (req, res) => {
   const { device_id, user_name } = req.body;
   
-  if (!device_id || !user_name || !/^[a-f0-9-]{36}$/i.test(device_id)) {
-    return res.status(400).json({ error: 'Invalid data' });
+ if (!device_id || device_id.length < 6 || device_id.length > 100) {
+    return res.status(400).json({ 
+      error: 'Invalid device_id length',
+      debug: { received: device_id, length: device_id?.length }
+    });
   }
+   device_id = device_id.replace(/^0+/, '').slice(0, 36);
   
   try {
     const priceResult = await pool.query('SELECT price_rupees FROM premium_plans WHERE is_active = TRUE LIMIT 1');
     const amount = priceResult.rows[0]?.price_rupees || 49;
     const payment_id = `PAY_${device_id.slice(-8)}_${Date.now()}`;
-    const upi_id = process.env.UPI_ID || 'yourbusiness@paytm'; // Set in .env
+    const upi_id = process.env.UPI_ID || 'donate.help@kotak'; // Set in .env
     
     const upi_link = `upi://pay?pa=${upi_id}&pn=${encodeURIComponent(user_name)}&am=${amount}&cu=INR&tn=${payment_id}`;
     const copy_text = `${amount} ${upi_id} ${payment_id}`;
