@@ -716,6 +716,51 @@ app.post('/api/track-premium-click', async (req, res) => {
   }
 });
 
+// 🔥 CHECK PREMIUM STATUS
+app.get('/api/premium/status/:device_id', async (req, res) => {
+  const { device_id } = req.params;
+
+  if (!device_id) {
+    return res.status(400).json({ error: 'Missing device_id' });
+  }
+
+  try {
+    const result = await pool.query(`
+      SELECT 
+        is_premium,
+        premium_expires_at,
+        CASE 
+          WHEN is_premium IS TRUE AND premium_expires_at > NOW()
+          THEN TRUE 
+          ELSE FALSE 
+        END AS premium_active,
+        CASE 
+          WHEN premium_expires_at > NOW()
+          THEN EXTRACT(days FROM (premium_expires_at - NOW()))::integer
+          ELSE 0
+        END AS days_remaining
+      FROM users
+      WHERE device_id = $1
+    `, [device_id]);
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      success: true,
+      premium_active: result.rows[0].premium_active,
+      expires_at: result.rows[0].premium_expires_at,
+      days_remaining: result.rows[0].days_remaining,
+    });
+
+  } catch (error) {
+    console.error('💥 Premium status error:', error.message);
+    res.status(500).json({ error: 'Premium check failed' });
+  }
+});
+
+
 
 
 
