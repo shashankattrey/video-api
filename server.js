@@ -759,6 +759,88 @@ app.get('/api/premium/status/:device_id', async (req, res) => {
     res.status(500).json({ error: 'Premium check failed' });
   }
 });
+// 🔥 VERIFY PAYMENT SCREENSHOT (RENDER + CLOUDINARY)
+app.post(
+  '/api/verify-screenshot',
+  upload.single('screenshot'),
+  async (req, res) => {
+    try {
+      const { device_id, payment_id, amount } = req.body;
+
+      console.log('📥 VERIFY SCREENSHOT:', {
+        device: device_id?.slice(-8),
+        payment_id,
+        amount,
+      });
+
+      // ✅ Validation
+      if (!device_id || !payment_id || !amount) {
+        return res.status(400).json({
+          error: 'Missing device_id, payment_id or amount',
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({
+          error: 'Screenshot file is required',
+        });
+      }
+
+      // 🔥 Upload to Cloudinary
+      const uploadToCloudinary = () =>
+        new Promise((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            {
+              folder: 'payment_screenshots',
+              public_id: `payment_${payment_id}_${uuidv4()}`,
+            },
+            (error, result) => {
+              if (error) reject(error);
+              else resolve(result);
+            }
+          );
+
+          streamifier.createReadStream(req.file.buffer).pipe(stream);
+        });
+
+      const cloudinaryResult = await uploadToCloudinary();
+
+      // 🔥 Store URL in DB
+      const result = await pool.query(
+        `
+        INSERT INTO payment_verifications (
+          device_id,
+          payment_id,
+          amount,
+          screenshot_url,
+          status,
+          created_at
+        )
+        VALUES ($1, $2, $3, $4, 'pending', NOW())
+        RETURNING id, screenshot_url, status
+        `,
+        [
+          device_id,
+          payment_id,
+          amount,
+          cloudinaryResult.secure_url,
+        ]
+      );
+
+      console.log('✅ Screenshot stored:', result.rows[0]);
+
+      res.json({
+        success: true,
+        message: 'Screenshot uploaded successfully',
+        data: result.rows[0],
+      });
+    } catch (error) {
+      console.error('💥 VERIFY SCREENSHOT ERROR:', error.message);
+      res.status(500).json({ error: 'Screenshot upload failed' });
+    }
+  }
+);
+
 
 
 
