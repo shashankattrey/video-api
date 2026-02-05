@@ -864,7 +864,41 @@ app.post(
   }
 );
 
+// 🔥 17. STRICT APP VERSION CHECK (DB ONLY)
+// app.get('/api/app-version', async (req, res) => {
+//   try {
+//     // Fetch only the specific keys your app needs
+//     const result = await pool.query(`
+//       SELECT key, value FROM app_config 
+//       WHERE key IN ('min_required_version', 'update_url', 'update_message')
+//     `);
 
+//     // Transform rows into a clean object: { min_required_version: "9.0", ... }
+//     const config = Object.fromEntries(result.rows.map(row => [row.key, row.value]));
+
+//     // Check if the critical keys actually exist in your DB
+//     if (!config.min_required_version || !config.update_url) {
+//       return res.status(404).json({ 
+//         success: false, 
+//         error: "App configuration missing in database" 
+//       });
+//     }
+
+//     res.json({
+//       success: true,
+//       min_required_version: config.min_required_version,
+//       update_url: config.update_url,
+//       message: config.update_message || ""
+//     });
+
+//   } catch (error) {
+//     console.error('💥 Database Error:', error.message);
+//     res.status(500).json({ 
+//       success: false, 
+//       error: "Internal Server Error" 
+//     });
+//   }
+// });
 
 
 
