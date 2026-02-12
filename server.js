@@ -393,10 +393,11 @@ app.get('/api/user/device/:device_id', async (req, res) => {
 });
 
 // 🔥 7. PROFILE CREATE/UPDATE
+// 🔥 7. PROFILE CREATE/UPDATE (Modified for Google Review)
 app.post('/api/profile', async (req, res) => {
   const { name, phone, device_id, created_at } = req.body;
 
-  if (!name?.trim() || !phone || phone.length !== 10 || !/^\d{10}$/.test(phone) || !device_id) {
+  if (!name?.trim() || !phone || phone.length !== 10 || !device_id) {
     return res.status(400).json({ error: 'Invalid profile data' });
   }
 
@@ -404,46 +405,37 @@ app.post('/api/profile', async (req, res) => {
   try {
     await client.query('BEGIN');
     
-    const existingDevice = await client.query(
-      'SELECT id, phone, name, coins, referral_code FROM users WHERE device_id = $1', 
-      [device_id]
-    );
-
-    if (existingDevice.rows.length > 0) {
-      await client.query(
-        'UPDATE users SET phone = $1, name = $2, last_active = NOW() WHERE device_id = $3',
-        [phone, name.trim(), device_id]
-      );
-      
-      const updatedUser = { ...existingDevice.rows[0], phone, name: name.trim() };
-      await redisClient.del(`user_device:${device_id}`);
-      await redisClient.setEx(`user_device:${device_id}`, 3600, JSON.stringify(updatedUser));
-      
-      await client.query('COMMIT');
-      res.json({ success: true, ...updatedUser });
-      return;
-    }
-
     const referralCode = await generateReferralCode();
+
+    // 🚀 THE FIX: THIS IS THE ON CONFLICT QUERY
     const result = await client.query(`
       INSERT INTO users (
         device_id, phone, name, coins, referral_code, created_at,
         app_opens, total_session_duration, is_premium, last_active
       ) VALUES ($1, $2, $3, 5, $4, $5, 0, 0, FALSE, NOW())
+      ON CONFLICT (device_id) 
+      DO UPDATE SET 
+        phone = EXCLUDED.phone,
+        name = EXCLUDED.name,
+        last_active = NOW()
       RETURNING id, device_id, phone, name, coins, referral_code, created_at
     `, [device_id, phone, name.trim(), referralCode, created_at || new Date()]);
 
-    await redisClient.setEx(`user_device:${device_id}`, 3600, JSON.stringify(result.rows[0]));
     await client.query('COMMIT');
-    res.status(201).json(result.rows[0]);
+
+    const userData = result.rows[0];
+    await redisClient.del(`user_device:${device_id}`);
+    await redisClient.setEx(`user_device:${device_id}`, 3600, JSON.stringify(userData));
+    
+    res.status(200).json(userData);
   } catch (error) {
     await client.query('ROLLBACK');
+    console.error('💥 Profile Error:', error.message);
     res.status(500).json({ error: 'Profile failed' });
   } finally {
     client.release();
   }
 });
-
 // 🔥 8. ADMIN PREMIUM ACTIVATION
 app.post('/api/admin/activate-premium', async (req, res) => {
   const { device_id } = req.body;
